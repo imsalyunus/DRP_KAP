@@ -1,0 +1,37 @@
+---
+- name: Start IIS KAP Website
+  hosts: your_web_server  # Ganti dengan hostname server web in-active
+  gather_facts: no
+  tasks:
+    - name: Start IIS Website dan Service
+      win_shell: |
+        # Start IIS Service (W3SVC)
+        Start-Service -Name "W3SVC" -ErrorAction Stop
+        
+        # Start Website KAP (sesuaikan dengan nama website di IIS)
+        Import-Module WebAdministration
+        Start-WebSite -Name "KAP Website"  # Ganti dengan nama website yang sesuai
+        
+        # Verifikasi status
+        $iisStatus = Get-Service -Name "W3SVC" | Select-Object Name, Status
+        $siteStatus = Get-WebSite -Name "KAP Website" | Select-Object Name, State
+        
+        [PSCustomObject]@{
+          IIS_Service = $iisStatus.Status
+          Website     = $siteStatus.State
+        } | ConvertTo-Json
+      register: iis_result
+      ignore_errors: yes
+
+    - name: Tampilkan hasil
+      debug:
+        msg: |
+          HASIL START IIS:
+          - IIS Service: {{ (iis_result.stdout | from_json).IIS_Service }}
+          - Website Status: {{ (iis_result.stdout | from_json).Website }}
+          {% if (iis_result.stdout | from_json).IIS_Service == "Running" and 
+                (iis_result.stdout | from_json).Website == "Started" %}
+          ✅ IIS dan Website KAP berhasil dijalankan
+          {% else %}
+          ❌ Gagal menjalankan IIS
+          {% endif %}
