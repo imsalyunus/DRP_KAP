@@ -1,0 +1,116 @@
+---
+- name: Start All KAP Services
+  hosts: "{{ target_server }}"  # Gunakan parameter saat eksekusi
+  gather_facts: no
+  vars:
+    web_services:
+      - name: "KAP Service – Web Config Editor"
+        purpose: "Menjalankan perubahan connection string dari server web KAP"
+    
+    db_services:
+      - name: "KAP Service Application"
+        purpose: "Menjalankan Job KAP dari aplikasi web KAP"
+      - name: "KAP Service – Service Editor"
+        purpose: "Menjalankan perubahan connection string dari server web KAP"
+
+  tasks:
+    # =============================================
+    # 1. START SERVICES DI SERVER WEB
+    # =============================================
+    - name: Start web services (jika target adalah web server)
+      win_shell: |
+        $results = @()
+        $service = "{{ web_services[0].name }}"
+        
+        try {
+          Start-Service -Name "$service" -ErrorAction Stop
+          $status = (Get-Service -Name "$service").Status
+          $results += [PSCustomObject]@{
+            Service   = $service
+            Status    = $status
+            Purpose   = "{{ web_services[0].purpose }}"
+          }
+        } catch {
+          $results += [PSCustomObject]@{
+            Service   = $service
+            Status    = "FAILED"
+            Error     = $_.Exception.Message
+          }
+        }
+        
+        $results | ConvertTo-Json -Depth 3
+      register: web_result
+      when: "'web' in group_names"  # Hanya jalankan di group web server
+      ignore_errors: yes
+
+    # =============================================
+    # 2. START SERVICES DI SERVER DATABASE
+    # =============================================
+    - name: Start database services (jika target adalah db server)
+      win_shell: |
+        $results = @()
+        $services = @(
+          @{Name="{{ db_services[0].name }}"; Purpose="{{ db_services[0].purpose }}"},
+          @{Name="{{ db_services[1].name }}"; Purpose="{{ db_services[1].purpose }}"}
+        )
+        
+        foreach ($svc in $services) {
+          try {
+            Start-Service -Name $svc.Name -ErrorAction Stop
+            $status = (Get-Service -Name $svc.Name).Status
+            $results += [PSCustomObject]@{
+              Service   = $svc.Name
+              Status    = $status
+              Purpose   = $svc.Purpose
+            }
+          } catch {
+            $results += [PSCustomObject]@{
+              Service   = $svc.Name
+              Status    = "FAILED"
+              Error     = $_.Exception.Message
+            }
+          }
+        }
+        
+        $results | ConvertTo-Json -Depth 3
+      register: db_result
+      when: "'db' in group_names"  # Hanya jalankan di group database server
+      ignore_errors: yes
+
+    # =============================================
+    # 3. TAMPILKAN HASIL
+    # =============================================
+    - name: Show web services result
+      debug:
+        msg: |
+          WEB SERVER SERVICES:
+          Service: {{ (web_result.stdout | from_json).Service }}
+          Status: {{ (web_result.stdout | from_json).Status }}
+          Purpose: {{ (web_result.stdout | from_json).Purpose }}
+          {% if (web_result.stdout | from_json).Status == "Running" %}
+          ✅ Service web berhasil di-start
+          {% else %}
+          ❌ Gagal: {{ (web_result.stdout | from_json).Error | default('Unknown error') }}
+          {% endif %}
+      when: web_result is defined
+
+    - name: Show database services result
+      debug:
+        msg: |
+          DATABASE SERVER SERVICES:
+          {% for service in (db_result.stdout | from_json) %}
+          - Service: {{ service.Service }}
+            Status: {{ service.Status }}
+            Purpose: {{ service.Purpose }}
+            {% if service.Error is defined %}
+            Error: {{ service.Error }}
+            {% endif %}
+          {% endfor %}
+          
+          {% set running_services = (db_result.stdout | from_json | selectattr('Status', 'equalto', 'Running') | list | count) %}
+          {% if running_services == 2 %}
+          ✅ Semua service database berhasil di-start
+          {% else %}
+          ❌ Ada service database yang gagal ({{ 2 - running_services }} dari 2)
+          {% endif %}
+      when: db_result is defined
