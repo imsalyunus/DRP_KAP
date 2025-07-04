@@ -1,0 +1,105 @@
+---
+- name: Verify CNKAP Database Mirroring Synchronization
+  hosts: localhost  # Dijalankan dari control node
+  gather_facts: no
+  vars:
+    # Konfigurasi server active (Principal)
+    active_server: "IDCBPKAPSAPP001\\JDKAPP1"  # Gunakan double backslash untuk escape, Format: hostname\instance
+    active_auth: "Windows Authentication"
+    
+    # Konfigurasi server in-active (Mirror)
+    mirror_server: "IDCBPKAPSDBS002"           # Hostname mirror server
+    mirror_auth: "Windows Authentication"
+    
+    db_name: "CNKAP"
+
+  tasks:
+    # =============================================
+    # 1. CHECK PRINCIPAL SERVER (ACTIVE)
+    # =============================================
+    - name: Check principal server status
+      win_powershell:
+        script: |
+          $query = @"
+          SELECT 
+            DB_NAME(database_id) AS DatabaseName,
+            mirroring_state_desc AS MirrorState,
+            mirroring_role_desc AS Role,
+            mirroring_partner_name AS PartnerServer
+          FROM sys.database_mirroring
+          WHERE DB_NAME(database_id) = '{{ db_name }}'
+          "@
+          
+          try {
+            if ("{{ active_auth }}" -eq "Windows Authentication") {
+              $result = Invoke-Sqlcmd -Query $query -ServerInstance "{{ active_server }}" -TrustServerCertificate -ErrorAction Stop
+            } else {
+              $result = Invoke-Sqlcmd -Query $query -ServerInstance "{{ active_server }}" -Username "{{ sql_user }}" -Password "{{ sql_pass }}" -TrustServerCertificate -ErrorAction Stop
+            }
+            $result | ConvertTo-Json -Depth 3
+          } catch {
+            Write-Output ("ERROR: " + $_.Exception.Message) | ConvertTo-Json
+          }
+      register: principal_status
+      delegate_to: "{{ active_server.split('\\')[0] }}"  # Menggunakan hostname dari instance
+
+    # =============================================
+    # 2. CHECK MIRROR SERVER (IN-ACTIVE)
+    # =============================================
+    - name: Check mirror server status
+      win_powershell:
+        script: |
+          $query = @"
+          SELECT 
+            DB_NAME(database_id) AS DatabaseName,
+            mirroring_state_desc AS MirrorState,
+            mirroring_role_desc AS Role,
+            mirroring_partner_name AS PartnerServer
+          FROM sys.database_mirroring
+          WHERE DB_NAME(database_id) = '{{ db_name }}'
+          "@
+          
+          try {
+            if ("{{ mirror_auth }}" -eq "Windows Authentication") {
+              $result = Invoke-Sqlcmd -Query $query -ServerInstance "{{ mirror_server }}" -TrustServerCertificate -ErrorAction Stop
+            } else {
+              $result = Invoke-Sqlcmd -Query $query -ServerInstance "{{ mirror_server }}" -Username "{{ sql_user }}" -Password "{{ sql_pass }}" -TrustServerCertificate -ErrorAction Stop
+            }
+            $result | ConvertTo-Json -Depth 3
+          } catch {
+            Write-Output ("ERROR: " + $_.Exception.Message) | ConvertTo-Json
+          }
+      register: mirror_status
+      delegate_to: "{{ mirror_server }}"
+
+    # =============================================
+    # 3. VALIDATE SYNCHRONIZATION STATUS
+    # =============================================
+    - name: Validate mirroring synchronization
+      debug:
+        msg: |
+          MIRRORING STATUS VALIDATION:
+          
+          PRINCIPAL SERVER ({{ active_server }}):
+          - Database: {{ principal_status.stdout | from_json | selectattr('DatabaseName') | first }}
+          - Role: {{ principal_status.stdout | from_json | selectattr('Role') | first }}
+          - State: {{ principal_status.stdout | from_json | selectattr('MirrorState') | first }}
+          - Partner: {{ principal_status.stdout | from_json | selectattr('PartnerServer') | first }}
+          
+          MIRROR SERVER ({{ mirror_server }}):
+          - Database: {{ mirror_status.stdout | from_json | selectattr('DatabaseName') | first }}
+          - Role: {{ mirror_status.stdout | from_json | selectattr('Role') | first }}
+          - State: {{ mirror_status.stdout | from_json | selectattr('MirrorState') | first }}
+          - Partner: {{ mirror_status.stdout | from_json | selectattr('PartnerServer') | first }}
+          
+          {% set principal = principal_status.stdout | from_json %}
+          {% set mirror = mirror_status.stdout | from_json %}
+          {% if principal.Role == 'PRINCIPAL' and principal.MirrorState == 'SYNCHRONIZED' and
+                mirror.Role == 'MIRROR' and mirror.MirrorState in ['SYNCHRONIZED', 'RESTORING'] %}
+          ✅ VALID: Database CNKAP fully synchronized
+          {% else %}
+          ❌ ERROR: Mirroring status invalid!
+          Required state:
+          - Principal: PRINCIPAL, SYNCHRONIZED
+          - Mirror: MIRROR, SYNCHRONIZED/RESTORING
+          {% endif %}
