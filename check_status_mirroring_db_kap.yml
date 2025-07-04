@@ -1,0 +1,74 @@
+---
+- name: Verify CNKAP Database Mirroring Status
+  hosts: windows_servers
+  gather_facts: no
+  collections:
+    - ansible.windows
+
+  vars:
+    sql_server: "10.27.20.197,1708"  # Sesuaikan dengan IP dan port SQL Server
+    sql_username: "saer"             # Sesuaikan dengan username
+    sql_password: "password_anda"    # Ganti dengan password yang sesuai
+    db_name: "CNKAP"
+
+  tasks:
+    # =============================================
+    # 1. CHECK MIRRORING STATUS
+    # =============================================
+    - name: Get database mirroring status
+      win_powershell:
+        script: |
+          $query = @"
+          SELECT 
+            DB_NAME(database_id) AS DatabaseName,
+            mirroring_state_desc AS MirrorState,
+            mirroring_role_desc AS Role,
+            mirroring_partner_name AS PartnerServer
+          FROM sys.database_mirroring
+          WHERE DB_NAME(database_id) = '{{ db_name }}'
+          "@
+          
+          $connectionString = "Server={{ sql_server }};Database=master;User ID={{ sql_username }};Password={{ sql_password }};"
+          $connection = New-Object System.Data.SqlClient.SqlConnection
+          $connection.ConnectionString = $connectionString
+          
+          try {
+            $connection.Open()
+            $command = $connection.CreateCommand()
+            $command.CommandText = $query
+            $reader = $command.ExecuteReader()
+            
+            $result = @()
+            while ($reader.Read()) {
+              $result += [PSCustomObject]@{
+                DatabaseName = $reader["DatabaseName"]
+                MirrorState = $reader["MirrorState"]
+                Role = $reader["Role"]
+                PartnerServer = $reader["PartnerServer"]
+              }
+            }
+            $result | ConvertTo-Json
+          }
+          finally {
+            $connection.Close()
+          }
+      register: mirroring_status
+      no_log: true  # Menyembunyikan credential di output
+
+    # =============================================
+    # 2. VALIDASI STATUS
+    # =============================================
+    - name: Validate mirroring status
+      debug:
+        msg: |
+          DATABASE MIRRORING STATUS:
+          - Database: {{ (mirroring_status.stdout | from_json).DatabaseName }}
+          - Server Role: {{ (mirroring_status.stdout | from_json).Role }}
+          - Mirror State: {{ (mirroring_status.stdout | from_json).MirrorState }}
+          - Partner Server: {{ (mirroring_status.stdout | from_json).PartnerServer }}
+          {% if (mirroring_status.stdout | from_json).MirrorState == "SYNCHRONIZED" and 
+                (mirroring_status.stdout | from_json).Role == "PRINCIPAL" %}
+          ✅ STATUS VALID: Database tersinkronisasi dengan baik
+          {% else %}
+          ❌ ERROR: Status mirroring tidak valid!
+          {% endif %}
