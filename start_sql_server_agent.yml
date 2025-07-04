@@ -1,0 +1,27 @@
+---
+- name: Start SQL Server Agent
+  hosts: IDCBPKAPSDBS002  # Ganti dengan hostname server in-active
+  gather_facts: no
+  tasks:
+    - name: Start SQL Server Agent service
+      win_shell: |
+        # Start service dan set auto-start
+        Start-Service -Name "SQLAgent`$IDKAPSP1" -ErrorAction Stop
+        Set-Service -Name "SQLAgent`$IDKAPSP1" -StartupType Automatic
+        
+        # Verifikasi status
+        Get-Service -Name "SQLAgent`$IDKAPSP1" | 
+        Select-Object Name, Status, StartType | Format-List
+      register: sql_agent_status
+      ignore_errors: yes
+
+    - name: Tampilkan hasil
+      debug:
+        msg: |
+          HASIL START SQL AGENT:
+          {{ sql_agent_status.stdout }}
+          {% if "Running" in sql_agent_status.stdout %}
+          ✅ SQL Server Agent BERHASIL di-start (Site sekarang ACTIVE)
+          {% else %}
+          ❌ GAGAL menghidupkan SQL Server Agent
+          {% endif %}
