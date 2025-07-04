@@ -1,0 +1,121 @@
+---
+- name: Execute Database Mirroring Switchover
+  hosts: localhost
+  gather_facts: no
+  vars:
+    # Konfigurasi server
+    active_server: "IDCBRKAPSDBS002\\IDKAPSP1"  # Server active (Principal)
+    inactive_server: "IDCBPKAPSDBS002\\IDKAPSP1" # Server in-active (Mirror)
+    db_name: "CNKAP"
+    sql_user: "your_sql_user"  # Hapus jika pakai Windows Auth
+    sql_pass: "your_sql_pass"  # Hapus jika pakai Windows Auth
+
+  tasks:
+    # =============================================
+    # 1. FAILOVER KE SERVER MIRROR (SWITCHOVER)
+    # =============================================
+    - name: Execute failover on principal server
+      win_shell: |
+        $query = "ALTER DATABASE [{{ db_name }}] SET PARTNER FAILOVER"
+        $params = @{
+          ServerInstance = "{{ active_server }}"
+          Query = $query
+          TrustServerCertificate = $true
+        }
+        
+        {% if sql_user is defined %}
+        $params.Add("Username", "{{ sql_user }}")
+        $params.Add("Password", "{{ sql_pass }}")
+        {% endif %}
+        
+        try {
+          Invoke-Sqlcmd @params
+          "SUCCESS: Failover executed on {{ active_server }}"
+        } catch {
+          "ERROR: $($_.Exception.Message)"
+        }
+      register: failover_result
+      delegate_to: "{{ active_server.split('\\')[0] }}"
+
+    # =============================================
+    # 2. RECOVER DATABASE DI SERVER BARU (EX-MIRROR)
+    # =============================================
+    - name: Recover database on new principal
+      win_shell: |
+        $query = "RESTORE DATABASE [{{ db_name }}] WITH RECOVERY"
+        $params = @{
+          ServerInstance = "{{ inactive_server }}"
+          Query = $query
+          TrustServerCertificate = $true
+        }
+        
+        {% if sql_user is defined %}
+        $params.Add("Username", "{{ sql_user }}")
+        $params.Add("Password", "{{ sql_pass }}")
+        {% endif %}
+        
+        try {
+          Invoke-Sqlcmd @params
+          "SUCCESS: Database recovered on {{ inactive_server }}"
+        } catch {
+          "ERROR: $($_.Exception.Message)"
+        }
+      register: recovery_result
+      delegate_to: "{{ inactive_server.split('\\')[0] }}"
+      when: "'SUCCESS' in failover_result.stdout"
+
+    # =============================================
+    # 3. VERIFIKASI STATUS
+    # =============================================
+    - name: Verify new mirroring status
+      win_shell: |
+        $query = @"
+        SELECT 
+          DB_NAME(database_id) AS DatabaseName,
+          mirroring_state_desc AS MirrorState,
+          mirroring_role_desc AS Role
+        FROM sys.database_mirroring
+        WHERE DB_NAME(database_id) = '{{ db_name }}'
+        "@
+        
+        $params = @{
+          ServerInstance = "{{ inactive_server }}"
+          Query = $query
+          TrustServerCertificate = $true
+        }
+        
+        {% if sql_user is defined %}
+        $params.Add("Username", "{{ sql_user }}")
+        $params.Add("Password", "{{ sql_pass }}")
+        {% endif %}
+        
+        try {
+          Invoke-Sqlcmd @params | ConvertTo-Json
+        } catch {
+          @{Error=$_.Exception.Message} | ConvertTo-Json
+        }
+      register: mirror_status
+      delegate_to: "{{ inactive_server.split('\\')[0] }}"
+      when: recovery_result is defined
+
+    # =============================================
+    # 4. TAMPILKAN HASIL
+    # =============================================
+    - name: Show operation results
+      debug:
+        msg: |
+          SWITCHOVER RESULTS:
+          1. Failover:
+            - Server: {{ active_server }}
+            - Status: {{ failover_result.stdout }}
+          
+          {% if recovery_result is defined %}
+          2. Database Recovery:
+            - Server: {{ inactive_server }}
+            - Status: {{ recovery_result.stdout }}
+          
+          3. Mirroring Status:
+            - Database: {{ (mirror_status.stdout | from_json).DatabaseName }}
+            - Role: {{ (mirror_status.stdout | from_json).Role }}
+            - State: {{ (mirror_status.stdout | from_json).MirrorState }}
+          {% endif %}
