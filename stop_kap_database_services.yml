@@ -1,0 +1,51 @@
+---
+- name: Stop KAP Database Services
+  hosts: your_db_server  # Ganti dengan hostname server database KAP
+  gather_facts: no
+  vars:
+    kap_services:
+      - "KAP Service Application"
+      - "KAP Service - Service Editor"
+
+  tasks:
+    - name: Stop all KAP services
+      win_shell: |
+        $results = @()
+        $services = @("{{ kap_services | join('","') }}")
+        
+        foreach ($service in $services) {
+          try {
+            $svc = Get-Service -Name $service -ErrorAction Stop
+            if ($svc.Status -eq 'Running') {
+              Stop-Service -Name $service -Force
+              Start-Sleep -Seconds 2  # Beri waktu untuk stop
+            }
+            $results += [PSCustomObject]@{
+              Service = $service
+              Status = (Get-Service -Name $service).Status
+            }
+          } catch {
+            $results += [PSCustomObject]@{
+              Service = $service
+              Status = "NOT_FOUND"
+              Error = $_.Exception.Message
+            }
+          }
+        }
+        $results | Format-Table -AutoSize | Out-String
+      register: stop_results
+      ignore_errors: yes
+
+    - name: Tampilkan hasil
+      debug:
+        msg: |
+          HASIL STOP SERVICE:
+          {% for line in stop_results.stdout_lines %}
+          {{ line }}
+          {% endfor %}
+          
+          {% if "Running" not in stop_results.stdout %}
+          ✅ Semua service KAP berhasil dihentikan
+          {% else %}
+          ❌ Ada service yang masih running
+          {% endif %}
