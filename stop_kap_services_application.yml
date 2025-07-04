@@ -1,0 +1,25 @@
+---
+- name: Stop KAP Web Service
+  hosts: your_web_server  # Ganti dengan hostname server web KAP
+  gather_facts: no
+  tasks:
+    - name: Stop KAP Web Config Editor service
+      win_shell: |
+        # Stop service dan verifikasi status
+        $serviceName = "KAP Service – Web Config Editor"  # Perhatikan karakter khusus '–'
+        Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+        Get-Service -Name $serviceName | 
+        Select-Object Name, Status | Format-List
+      register: service_status
+      ignore_errors: yes
+
+    - name: Tampilkan hasil
+      debug:
+        msg: |
+          Hasil Stop Service:
+          {{ service_status.stdout }}
+          {% if "Stopped" in service_status.stdout %}
+          ✅ Service berhasil dihentikan
+          {% else %}
+          ❌ Gagal menghentikan service
+          {% endif %}
