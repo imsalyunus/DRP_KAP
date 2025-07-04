@@ -1,0 +1,122 @@
+---
+- name: Update DNS Records for KAP Migration
+  hosts: localhost
+  gather_facts: no
+  vars:
+    # Konfigurasi DNS
+    infoblox_url: "https://10.17.144.18/wapi/v2.11/"
+    infoblox_user: "admin"
+    infoblox_pass: "password"  # Ganti dengan password sebenarnya
+    dns_zone: "cimbniaga.co.id"
+    
+    # Record yang akan diupdate
+    dns_records:
+      - name: "kap"
+        current_ip: "10.17.16.33"
+        new_ip: "10.27.16.33"
+      - name: "cnkap"
+        current_ip: "10.17.17.59"
+        new_ip: "10.27.17.59"
+
+  tasks:
+    # =============================================
+    # 1. UPDATE DNS RECORDS DI INFOBLOX
+    # =============================================
+    - name: Update A records in Infoblox
+      win_shell: |
+        # Fungsi untuk update DNS record
+        function Update-DnsRecord {
+          param(
+            [string]$record_name,
+            [string]$new_ip,
+            [string]$cred
+          )
+          
+          $uri = "{{ infoblox_url }}record:a?name=$record_name.{{ dns_zone }}"
+          $headers = @{
+            "Content-Type" = "application/json"
+          }
+          
+          try {
+            # Get current record
+            $response = Invoke-RestMethod -Uri $uri -Headers $headers -Credential $cred -Method Get
+            $ref = $response._ref
+            
+            # Update record
+            $body = @{
+              ipv4addr = $new_ip
+            } | ConvertTo-Json
+            
+            Invoke-RestMethod -Uri "{{ infoblox_url }}$ref" -Headers $headers -Credential $cred -Method Put -Body $body
+            return "SUCCESS"
+          } catch {
+            return "ERROR: $($_.Exception.Message)"
+          }
+        }
+        
+        # Setup credential
+        $securePass = ConvertTo-SecureString "{{ infoblox_pass }}" -AsPlainText -Force
+        $cred = New-Object System.Management.Automation.PSCredential ("{{ infoblox_user }}", $securePass)
+        
+        # Proses semua record
+        $results = @()
+        @"
+{{ dns_records | to_json }}
+"@ | ConvertFrom-Json | ForEach-Object {
+          $result = Update-DnsRecord -record_name $_.name -new_ip $_.new_ip -cred $cred
+          $results += [PSCustomObject]@{
+            Record = $_.name
+            Status = $result
+            OldIP = $_.current_ip
+            NewIP = $_.new_ip
+          }
+        }
+        
+        $results | ConvertTo-Json -Depth 3
+      register: dns_update
+      no_log: true  # Sembunyikan credential di log
+
+    # =============================================
+    # 2. VERIFIKASI DENGAN PING
+    # =============================================
+    - name: Verify DNS changes with ping
+      win_shell: |
+        $results = @()
+        @"
+{{ dns_records | to_json }}
+"@ | ConvertFrom-Json | ForEach-Object {
+          $ping = Test-Connection -ComputerName "$($_.name).{{ dns_zone }}" -Count 1 -ErrorAction SilentlyContinue
+          $results += [PSCustomObject]@{
+            Hostname = "$($_.name).{{ dns_zone }}"
+            ExpectedIP = $_.new_ip
+            ActualIP = $ping.IPV4Address.IPAddressToString
+            Status = if ($ping.IPV4Address.IPAddressToString -eq $_.new_ip) { "MATCH" } else { "MISMATCH" }
+          }
+        }
+        $results | ConvertTo-Json
+      register: ping_test
+
+    # =============================================
+    # 3. TAMPILKAN HASIL
+    # =============================================
+    - name: Show DNS update results
+      debug:
+        msg: |
+          DNS UPDATE RESULTS:
+          {% for record in (dns_update.stdout | from_json) %}
+          - Record: {{ record.Record }}.{{ dns_zone }}
+            Old IP: {{ record.OldIP }}
+            New IP: {{ record.NewIP }}
+            Status: {{ record.Status }}
+          {% endfor %}
+
+    - name: Show ping verification results
+      debug:
+        msg: |
+          PING VERIFICATION:
+          {% for test in (ping_test.stdout | from_json) %}
+          - Host: {{ test.Hostname }}
+            Expected IP: {{ test.ExpectedIP }}
+            Actual IP: {{ test.ActualIP }}
+            Status: {% if test.Status == "MATCH" %}✅{% else %}❌{% endif %}
+          {% endfor %}
