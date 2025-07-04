@@ -1,4 +1,54 @@
 ---
+- name: Stop Database Mirroring for CNKAP
+  hosts: IDCBRKAPSDBS002  # Ganti dengan hostname server active
+  gather_facts: no
+  vars:
+    db_name: "CNKAP"
+    sql_instance: "IDKAPSP1"  # Ganti dengan nama instance SQL
+
+  tasks:
+    - name: Remove database mirroring
+      win_shell: |
+        # Hentikan mirroring
+        $query = @"
+        ALTER DATABASE [{{ db_name }}] SET PARTNER OFF
+        "@
+        
+        try {
+          Invoke-Sqlcmd -Query $query -ServerInstance "{{ inventory_hostname }}\{{ sql_instance }}" -TrustServerCertificate
+          "SUCCESS: Mirroring stopped for {{ db_name }}"
+        } catch {
+          "ERROR: $($_.Exception.Message)"
+        }
+      register: mirror_result
+
+    - name: Verify mirroring status
+      win_shell: |
+        $query = @"
+        SELECT 
+          mirroring_state_desc AS [State],
+          mirroring_role_desc AS [Role]
+        FROM sys.database_mirroring
+        WHERE DB_NAME(database_id) = '{{ db_name }}'
+        "@
+        
+        Invoke-Sqlcmd -Query $query -ServerInstance "{{ inventory_hostname }}\{{ sql_instance }}" -TrustServerCertificate |
+        ConvertTo-Json
+      register: mirror_status
+      when: "'SUCCESS' in mirror_result.stdout"
+
+    - name: Show results
+      debug:
+        msg: |
+          HASIL STOP MIRRORING:
+          - Status: {{ mirror_result.stdout }}
+          {% if mirror_status is defined %}
+          - Current State: {{ (mirror_status.stdout | from_json).State | default('NOT_MIRRORED') }}
+          - Current Role: {{ (mirror_status.stdout | from_json).Role | default('NONE') }}
+          {% endif %}
+
+
+---
 - name: Execute Database Mirroring Switchover
   hosts: localhost
   gather_facts: no
