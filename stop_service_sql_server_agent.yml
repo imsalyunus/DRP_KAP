@@ -1,0 +1,25 @@
+---
+- name: Stop SQL Server Agent Service
+  hosts: IDCBRKAPSDBS002  # Ganti dengan hostname server target
+  gather_facts: no
+  tasks:
+    - name: Stop SQL Server Agent
+      win_shell: |
+        # Stop service dan tampilkan status
+        Stop-Service -Name "SQLSERVERAGENT" -Force
+        Get-Service -Name "SQLSERVERAGENT" | 
+        Select-Object Name, Status | Format-Table -AutoSize
+      register: stop_result
+      ignore_errors: yes
+
+    - name: Tampilkan hasil
+      debug:
+        msg: |
+          Hasil Stop SQL Server Agent:
+          - Service: SQLSERVERAGENT
+          - Status: {{ stop_result.stdout_lines[-1] | regex_search('(Running|Stopped)') }}
+          {% if "Stopped" in stop_result.stdout %}
+          ✅ Berhasil di-stop
+          {% else %}
+          ❌ Gagal di-stop
+          {% endif %}
