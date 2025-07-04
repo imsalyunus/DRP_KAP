@@ -1,0 +1,32 @@
+---
+- name: Stop IIS KAP Site secara Otomatis
+  hosts: windows_servers  # Sesuaikan dengan group inventory Ansible
+  gather_facts: no
+  collections:
+    - ansible.windows
+
+  tasks:
+    # Task 1: Stop Site "KAP2022" di IIS
+    - name: Stop IIS Site KAP2022
+      win_powershell:
+        script: |
+          Import-Module WebAdministration
+          Stop-WebSite -Name "KAP2022"
+      register: stop_site
+      ignore_errors: yes
+
+    # Task 2: Verifikasi status Site
+    - name: Get Status Site KAP2022
+      win_powershell:
+        script: |
+          Import-Module WebAdministration
+          Get-WebSite -Name "KAP2022" | Select-Object Name, State
+      register: site_status
+
+    # Task 3: Tampilkan hasil
+    - name: Debug Hasil
+      debug:
+        msg: |
+          ✅ Site KAP2022 berhasil di-stop.
+          Status terkini: {{ site_status.stdout_lines }}
+      when: stop_site.rc == 0
